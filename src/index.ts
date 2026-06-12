@@ -83,6 +83,10 @@ app.post("/api/v1/admin/pause", (_req: Request, res: Response) => {
   paused = true;
   res.json({ paused });
 });
+app.post("/api/v1/admin/unpause", (_req: Request, res: Response) => {
+  paused = false;
+  res.json({ paused });
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pair registry
