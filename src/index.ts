@@ -104,6 +104,19 @@ app.get("/api/v1/admin/status", (_req: Request, res: Response) => {
   res.json({ paused });
 });
 
+app.get("/api/v1/metrics", (_req: Request, res: Response) => {
+  const lines = [
+    "# HELP stableroute_pairs_total Number of registered pairs.",
+    "# TYPE stableroute_pairs_total gauge",
+    `stableroute_pairs_total ${pairRegistry.size}`,
+    "# HELP stableroute_paused 1 if paused, 0 otherwise.",
+    "# TYPE stableroute_paused gauge",
+    `stableroute_paused ${paused ? 1 : 0}`,
+  ];
+  res.setHeader("Content-Type", "text/plain; version=0.0.4");
+  res.send(lines.join("\n") + "\n");
+});
+
 app.get("/api/v1/stats", (_req: Request, res: Response) => {
   res.json({
     totalPairs: pairRegistry.size,
