@@ -572,11 +572,21 @@ app.use((req: Request, res: Response) => {
 // { error, message, requestId } as the explicit 400 / 404 bodies so
 // clients can branch on `error` uniformly.
 app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+  if (err && typeof err === "object" && "type" in err && (err as { type: string }).type === "entity.too.large") {
+    res.status(413).json({
+      error: "payload_too_large",
+      message: "request body exceeds the 100 KiB limit",
+      requestId: (req as Request & { id?: string }).id,
+    });
+    return;
+  }
   const message =
     err instanceof Error ? err.message : "Unexpected server error";
   res.status(500).json({
     error: "internal_error",
     message,
+    method: req.method,
+    path: req.path,
     requestId: (req as Request & { id?: string }).id,
   });
 });
