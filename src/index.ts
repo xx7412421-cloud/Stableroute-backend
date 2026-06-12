@@ -24,9 +24,29 @@ app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok", service: "stableroute-backend" });
 });
 
+// Asset symbols are short uppercase identifiers (USDC, EURC, XLM, …).
+// Cap at 12 chars (Stellar's max alphanumeric asset code) and reject
+// anything that is not a single string so an array param can't smuggle
+// through as a "truthy" value.
+const isAssetCode = (v: unknown): v is string =>
+  typeof v === "string" && v.length > 0 && v.length <= 12;
+
+// Quote amount: a base-units integer string. Parsed via BigInt so we
+// never lose precision on amounts above Number.MAX_SAFE_INTEGER.
+const parseAmount = (v: unknown): bigint | null => {
+  if (typeof v !== "string" || !/^[1-9][0-9]{0,38}$/.test(v)) return null;
+  try {
+    const n = BigInt(v);
+    return n > 0n ? n : null;
+  } catch {
+    return null;
+  }
+};
+
 app.get("/api/v1/quote", (req: Request, res: Response) => {
   const { source_asset, dest_asset, amount } = req.query;
   const requestId = (req as Request & { id?: string }).id;
+
   if (!source_asset || !dest_asset || !amount) {
     return res.status(400).json({
       error: "invalid_request",
@@ -35,10 +55,34 @@ app.get("/api/v1/quote", (req: Request, res: Response) => {
       requestId,
     });
   }
+  if (!isAssetCode(source_asset) || !isAssetCode(dest_asset)) {
+    return res.status(400).json({
+      error: "invalid_request",
+      message: "source_asset and dest_asset must be 1-12 character strings",
+      requestId,
+    });
+  }
+  if (source_asset === dest_asset) {
+    return res.status(400).json({
+      error: "invalid_request",
+      message: "source_asset and dest_asset must differ",
+      requestId,
+    });
+  }
+  const parsedAmount = parseAmount(amount);
+  if (parsedAmount === null) {
+    return res.status(400).json({
+      error: "invalid_request",
+      message:
+        "amount must be a positive integer string with no leading zero",
+      requestId,
+    });
+  }
+
   res.json({
     source_asset,
     dest_asset,
-    amount: String(amount),
+    amount: parsedAmount.toString(),
     estimated_rate: "1.0",
     route: [source_asset, dest_asset],
   });
