@@ -132,6 +132,11 @@ const defaultMeta = (): PairMeta => ({
 type WebhookRecord = { url: string; events: string[]; createdAt: number };
 const webhookStore = new Map<string, WebhookRecord>();
 
+app.get("/api/v1/webhooks", (_req: Request, res: Response) => {
+  const items = Array.from(webhookStore.entries()).map(([id, m]) => ({ id, ...m }));
+  res.json({ items });
+});
+
 app.post("/api/v1/webhooks", (req: Request, res: Response) => {
   const { url, events } = req.body ?? {};
   const requestId = (req as Request & { id?: string }).id;
