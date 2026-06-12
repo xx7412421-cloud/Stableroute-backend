@@ -132,6 +132,16 @@ const defaultMeta = (): PairMeta => ({
 type WebhookRecord = { url: string; events: string[]; createdAt: number };
 const webhookStore = new Map<string, WebhookRecord>();
 
+app.delete("/api/v1/webhooks/:id", (req: Request, res: Response) => {
+  const { id } = req.params;
+  if (!webhookStore.has(id)) {
+    res.status(404).json({ error: "not_found", message: `webhook ${id} not found`, requestId: (req as Request & { id?: string }).id });
+    return;
+  }
+  webhookStore.delete(id);
+  res.status(204).send();
+});
+
 app.get("/api/v1/webhooks", (_req: Request, res: Response) => {
   const items = Array.from(webhookStore.entries()).map(([id, m]) => ({ id, ...m }));
   res.json({ items });
