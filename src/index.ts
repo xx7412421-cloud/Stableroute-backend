@@ -129,6 +129,21 @@ const defaultMeta = (): PairMeta => ({
   liquidity: "0",
 });
 
+type AppEvent = { id: string; ts: number; type: string; payload: Record<string, unknown> };
+const eventLog: AppEvent[] = [];
+const EVENT_LOG_CAP = 10_000;
+function recordEvent(type: string, payload: Record<string, unknown>) {
+  eventLog.push({ id: randomUUID(), ts: Date.now(), type, payload });
+  if (eventLog.length > EVENT_LOG_CAP) eventLog.shift();
+}
+
+app.get("/api/v1/events", (req: Request, res: Response) => {
+  const since = Number(req.query.since ?? 0);
+  const limit = Math.min(EVENT_LOG_CAP, Math.max(1, Number(req.query.limit ?? 100)));
+  const items = eventLog.filter((e) => e.ts >= since).slice(-limit);
+  res.json({ items });
+});
+
 type ApiKeyRecord = { label: string; createdAt: number };
 const apiKeyStore = new Map<string, ApiKeyRecord>();
 
