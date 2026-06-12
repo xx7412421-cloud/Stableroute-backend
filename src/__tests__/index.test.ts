@@ -104,6 +104,20 @@ describe("StableRoute Backend", () => {
     });
   });
 
+  it("admin/pause blocks writes and unpause restores", async () => {
+    await request(app).post("/api/v1/admin/pause");
+    const blocked = await request(app)
+      .post("/api/v1/pairs")
+      .send({ source: "PAU", destination: "SED" });
+    expect(blocked.status).toBe(503);
+    expect(blocked.body.error).toBe("service_paused");
+    await request(app).post("/api/v1/admin/unpause");
+    const ok = await request(app)
+      .post("/api/v1/pairs")
+      .send({ source: "PAU", destination: "SED" });
+    expect(ok.status === 200 || ok.status === 201).toBe(true);
+  });
+
   describe("pair-meta endpoints", () => {
     it("registers a pair then patches its fee_bps", async () => {
       await request(app)
