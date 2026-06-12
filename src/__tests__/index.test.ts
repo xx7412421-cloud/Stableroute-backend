@@ -104,6 +104,21 @@ describe("StableRoute Backend", () => {
     });
   });
 
+  it("GET /api/v1/stats returns totalPairs and paused", async () => {
+    const res = await request(app).get("/api/v1/stats");
+    expect(res.status).toBe(200);
+    expect(typeof res.body.totalPairs).toBe("number");
+    expect(typeof res.body.paused).toBe("boolean");
+  });
+
+  it("GET /api/v1/metrics returns prometheus text", async () => {
+    const res = await request(app).get("/api/v1/metrics");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/^text\/plain/);
+    expect(res.text).toMatch(/stableroute_pairs_total/);
+    expect(res.text).toMatch(/stableroute_paused/);
+  });
+
   it("admin/pause blocks writes and unpause restores", async () => {
     await request(app).post("/api/v1/admin/pause");
     const blocked = await request(app)
