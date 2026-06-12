@@ -104,6 +104,22 @@ describe("StableRoute Backend", () => {
     });
   });
 
+  it("reads and patches /api/v1/config", async () => {
+    const get = await request(app).get("/api/v1/config");
+    expect(get.body.config.rateLimitPerWindow).toBeGreaterThan(0);
+    const patch = await request(app)
+      .patch("/api/v1/config")
+      .send({ rateLimitPerWindow: 120 });
+    expect(patch.body.config.rateLimitPerWindow).toBe(120);
+  });
+
+  it("rejects /config patches with negative integers", async () => {
+    const res = await request(app)
+      .patch("/api/v1/config")
+      .send({ rateLimitPerWindow: -1 });
+    expect(res.status).toBe(400);
+  });
+
   it("registers and removes a webhook", async () => {
     const create = await request(app)
       .post("/api/v1/webhooks")
