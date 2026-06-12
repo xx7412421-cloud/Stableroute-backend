@@ -104,6 +104,15 @@ describe("StableRoute Backend", () => {
     });
   });
 
+  it("serves an OpenAPI 3.0 spec with the expected paths", async () => {
+    const res = await request(app).get("/api/v1/openapi.json");
+    expect(res.status).toBe(200);
+    expect(res.body.openapi).toBe("3.0.3");
+    expect(res.body.paths["/api/v1/pairs"]).toBeTruthy();
+    expect(res.body.paths["/api/v1/quote"]).toBeTruthy();
+    expect(res.body.paths["/api/v1/admin/pause"]).toBeTruthy();
+  });
+
   it("reads and patches /api/v1/config", async () => {
     const get = await request(app).get("/api/v1/config");
     expect(get.body.config.rateLimitPerWindow).toBeGreaterThan(0);
