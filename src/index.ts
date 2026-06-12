@@ -129,6 +129,24 @@ const defaultMeta = (): PairMeta => ({
   liquidity: "0",
 });
 
+app.patch("/api/v1/pairs/:source/:destination/liquidity", (req: Request, res: Response) => {
+  const { source, destination } = req.params;
+  const k = pairKey(source, destination);
+  if (!pairRegistry.has(k)) {
+    res.status(404).json({ error: "not_found", message: "pair not registered", requestId: (req as Request & { id?: string }).id });
+    return;
+  }
+  const { liquidity } = req.body ?? {};
+  if (typeof liquidity !== "string" || !/^[0-9]{1,39}$/.test(liquidity)) {
+    res.status(400).json({ error: "invalid_request", message: "liquidity must be a non-negative integer string", requestId: (req as Request & { id?: string }).id });
+    return;
+  }
+  const meta = pairMeta.get(k) ?? defaultMeta();
+  meta.liquidity = liquidity;
+  pairMeta.set(k, meta);
+  res.json({ source, destination, ...meta });
+});
+
 app.patch("/api/v1/pairs/:source/:destination/max", (req: Request, res: Response) => {
   const { source, destination } = req.params;
   const k = pairKey(source, destination);
