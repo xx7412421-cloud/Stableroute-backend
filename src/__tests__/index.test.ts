@@ -104,6 +104,29 @@ describe("StableRoute Backend", () => {
     });
   });
 
+  describe("pair-meta endpoints", () => {
+    it("registers a pair then patches its fee_bps", async () => {
+      await request(app)
+        .post("/api/v1/pairs")
+        .send({ source: "USD", destination: "EUR" });
+      const set = await request(app)
+        .patch("/api/v1/pairs/USD/EUR/fee_bps")
+        .send({ feeBps: 50 });
+      expect(set.status).toBe(200);
+      expect(set.body.feeBps).toBe(50);
+
+      const info = await request(app).get("/api/v1/pairs/USD/EUR/info");
+      expect(info.status).toBe(200);
+      expect(info.body.feeBps).toBe(50);
+    });
+    it("rejects PATCH /fee_bps when pair is not registered", async () => {
+      const res = await request(app)
+        .patch("/api/v1/pairs/AAA/BBB/fee_bps")
+        .send({ feeBps: 5 });
+      expect(res.status).toBe(404);
+    });
+  });
+
   describe("GET /api/v1/quote validation", () => {
     it("rejects source_asset == dest_asset", async () => {
       const res = await request(app)
