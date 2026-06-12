@@ -129,6 +129,25 @@ const defaultMeta = (): PairMeta => ({
   liquidity: "0",
 });
 
+type WebhookRecord = { url: string; events: string[]; createdAt: number };
+const webhookStore = new Map<string, WebhookRecord>();
+
+app.post("/api/v1/webhooks", (req: Request, res: Response) => {
+  const { url, events } = req.body ?? {};
+  const requestId = (req as Request & { id?: string }).id;
+  if (typeof url !== "string" || !/^https?:\/\//.test(url) || url.length > 2048) {
+    res.status(400).json({ error: "invalid_request", message: "url must be http(s), <=2048 chars", requestId });
+    return;
+  }
+  if (!Array.isArray(events) || events.length === 0 || events.some((e) => typeof e !== "string")) {
+    res.status(400).json({ error: "invalid_request", message: "events must be a non-empty string array", requestId });
+    return;
+  }
+  const id = `wh_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  webhookStore.set(id, { url, events, createdAt: Date.now() });
+  res.status(201).json({ id, url, events });
+});
+
 /** Aggregate read of every per-pair slot in one round-trip. */
 app.get("/api/v1/pairs/:source/:destination/info", (req: Request, res: Response) => {
   const { source, destination } = req.params;
