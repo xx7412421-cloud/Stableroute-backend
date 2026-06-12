@@ -132,6 +132,15 @@ const defaultMeta = (): PairMeta => ({
 type ApiKeyRecord = { label: string; createdAt: number };
 const apiKeyStore = new Map<string, ApiKeyRecord>();
 
+app.get("/api/v1/api-keys", (_req: Request, res: Response) => {
+  const items = Array.from(apiKeyStore.entries()).map(([k, m]) => ({
+    prefix: k.slice(0, 8),
+    label: m.label,
+    createdAt: m.createdAt,
+  }));
+  res.json({ items });
+});
+
 app.post("/api/v1/api-keys", (req: Request, res: Response) => {
   const { label } = req.body ?? {};
   const requestId = (req as Request & { id?: string }).id;
