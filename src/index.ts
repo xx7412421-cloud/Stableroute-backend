@@ -129,6 +129,18 @@ const defaultMeta = (): PairMeta => ({
   liquidity: "0",
 });
 
+/** Aggregate read of every per-pair slot in one round-trip. */
+app.get("/api/v1/pairs/:source/:destination/info", (req: Request, res: Response) => {
+  const { source, destination } = req.params;
+  const k = pairKey(source, destination);
+  res.json({
+    source,
+    destination,
+    registered: pairRegistry.has(k),
+    ...(pairMeta.get(k) ?? defaultMeta()),
+  });
+});
+
 app.patch("/api/v1/pairs/:source/:destination/liquidity", (req: Request, res: Response) => {
   const { source, destination } = req.params;
   const k = pairKey(source, destination);
