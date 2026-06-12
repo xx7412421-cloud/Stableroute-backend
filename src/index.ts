@@ -78,6 +78,12 @@ app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok", service: "stableroute-backend" });
 });
 
+let paused = false;
+app.post("/api/v1/admin/pause", (_req: Request, res: Response) => {
+  paused = true;
+  res.json({ paused });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Pair registry
 // ─────────────────────────────────────────────────────────────────────────────
