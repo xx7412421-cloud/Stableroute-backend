@@ -53,6 +53,57 @@ describe("StableRoute Backend", () => {
     expect(res.body.requestId).toBeTruthy();
   });
 
+  describe("/api/v1/pairs", () => {
+    it("starts empty and registers a new pair with 201", async () => {
+      const list1 = await request(app).get("/api/v1/pairs");
+      expect(list1.status).toBe(200);
+      const initialCount = list1.body.pairs.length;
+
+      const reg = await request(app)
+        .post("/api/v1/pairs")
+        .send({ source: "PAIR_A", destination: "PAIR_B" });
+      expect(reg.status).toBe(201);
+      expect(reg.body).toEqual({
+        source: "PAIR_A",
+        destination: "PAIR_B",
+        registered: true,
+      });
+
+      const list2 = await request(app).get("/api/v1/pairs");
+      expect(list2.body.pairs.length).toBe(initialCount + 1);
+      expect(list2.body.pairs).toContainEqual({
+        source: "PAIR_A",
+        destination: "PAIR_B",
+      });
+    });
+
+    it("is idempotent: re-registering returns 200", async () => {
+      await request(app)
+        .post("/api/v1/pairs")
+        .send({ source: "IDEM_A", destination: "IDEM_B" });
+      const second = await request(app)
+        .post("/api/v1/pairs")
+        .send({ source: "IDEM_A", destination: "IDEM_B" });
+      expect(second.status).toBe(200);
+    });
+
+    it("rejects source == destination with 400", async () => {
+      const res = await request(app)
+        .post("/api/v1/pairs")
+        .send({ source: "USDC", destination: "USDC" });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/must differ/);
+    });
+
+    it("rejects too-long asset codes with 400", async () => {
+      const res = await request(app)
+        .post("/api/v1/pairs")
+        .send({ source: "USDC", destination: "THIRTEENLETTERS" });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/1-12 character strings/);
+    });
+  });
+
   describe("GET /api/v1/quote validation", () => {
     it("rejects source_asset == dest_asset", async () => {
       const res = await request(app)

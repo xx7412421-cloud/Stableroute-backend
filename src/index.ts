@@ -24,6 +24,58 @@ app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok", service: "stableroute-backend" });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Pair registry
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// In-memory mirror of the on-chain DataKey::Pair(source, dest) set the
+// router contract maintains. The settlement worker fans out from the
+// contract to this Map on startup and on every pair-registration event.
+// Process restart resets the map; persistence lands with the database
+// adapter.
+const pairRegistry = new Set<string>();
+const pairKey = (source: string, dest: string) => `${source}::${dest}`;
+
+/**
+ * List every registered (source, destination) pair.
+ * Response: { pairs: [{ source, destination }, ...] }
+ */
+app.get("/api/v1/pairs", (_req: Request, res: Response) => {
+  const pairs = Array.from(pairRegistry).map((k) => {
+    const [source, destination] = k.split("::");
+    return { source, destination };
+  });
+  res.json({ pairs });
+});
+
+/**
+ * Register a pair (test-only / operator surface; will move behind an
+ * admin auth guard once the gateway lands). Body: { source, destination }.
+ * Returns 201 on first-write, 200 on idempotent re-write.
+ */
+app.post("/api/v1/pairs", (req: Request, res: Response) => {
+  const { source, destination } = req.body ?? {};
+  const requestId = (req as Request & { id?: string }).id;
+  if (!isAssetCode(source) || !isAssetCode(destination)) {
+    return res.status(400).json({
+      error: "invalid_request",
+      message: "source and destination must be 1-12 character strings",
+      requestId,
+    });
+  }
+  if (source === destination) {
+    return res.status(400).json({
+      error: "invalid_request",
+      message: "source and destination must differ",
+      requestId,
+    });
+  }
+  const key = pairKey(source, destination);
+  const isNew = !pairRegistry.has(key);
+  pairRegistry.add(key);
+  res.status(isNew ? 201 : 200).json({ source, destination, registered: true });
+});
+
 // Asset symbols are short uppercase identifiers (USDC, EURC, XLM, …).
 // Cap at 12 chars (Stellar's max alphanumeric asset code) and reject
 // anything that is not a single string so an array param can't smuggle
