@@ -104,6 +104,19 @@ describe("StableRoute Backend", () => {
     });
   });
 
+  it("creates an api key and revokes it by prefix", async () => {
+    const create = await request(app)
+      .post("/api/v1/api-keys")
+      .send({ label: "test" });
+    expect(create.status).toBe(201);
+    expect(create.body.key).toMatch(/^srk_/);
+    const prefix = create.body.key.slice(0, 8);
+    const list = await request(app).get("/api/v1/api-keys");
+    expect(list.body.items.some((k: { prefix: string }) => k.prefix === prefix)).toBe(true);
+    const del = await request(app).delete(`/api/v1/api-keys/${prefix}`);
+    expect(del.status).toBe(204);
+  });
+
   it("GET /api/v1/stats returns totalPairs and paused", async () => {
     const res = await request(app).get("/api/v1/stats");
     expect(res.status).toBe(200);
