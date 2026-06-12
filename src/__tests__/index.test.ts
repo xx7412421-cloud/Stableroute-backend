@@ -104,6 +104,22 @@ describe("StableRoute Backend", () => {
     });
   });
 
+  it("records and surfaces pair.registered events", async () => {
+    await request(app)
+      .post("/api/v1/pairs")
+      .send({ source: "EVT", destination: "LOG" });
+    const events = await request(app).get("/api/v1/events?limit=50");
+    expect(events.status).toBe(200);
+    expect(
+      events.body.items.some(
+        (e: { type: string; payload: { source: string; destination: string } }) =>
+          e.type === "pair.registered" &&
+          e.payload.source === "EVT" &&
+          e.payload.destination === "LOG"
+      )
+    ).toBe(true);
+  });
+
   it("creates an api key and revokes it by prefix", async () => {
     const create = await request(app)
       .post("/api/v1/api-keys")
