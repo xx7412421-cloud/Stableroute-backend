@@ -55,8 +55,12 @@ Ensure these pass locally before pushing.
 
 ## Contributing
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow, branch naming, local checks, and PR expectations.
+
+Quick checklist:
+
 1. Fork the repo and create a branch from `main`.
-2. Install deps, add tests for new behavior, keep `npm run build` and `npm test` passing.
+2. Install deps, add tests for new behavior, keep `npm run build`, `npm run lint`, and `npm test` passing.
 3. Open a PR; CI must be green.
 
 ## License
