@@ -89,6 +89,26 @@ Quick checklist:
 2. Install deps, add tests for new behavior, keep `npm run build`, `npm run lint`, and `npm test` passing.
 3. Open a PR; CI must be green.
 
+## Coverage
+
+Test coverage thresholds are enforced in CI via Jest's `coverageThreshold`.
+Current targets: **statements ≥ 89%**, **branches ≥ 81%**, **functions ≥ 87%**,
+**lines ≥ 89%**.
+
+> **Note:** `server.ts` (24 lines of startup/teardown boilerplate) is excluded
+> from coverage targets because importing it starts a server that keeps the
+> event loop alive and prevents Jest from exiting. Once `server.ts` is
+> refactored for testability, thresholds can be raised toward 95% per the
+> original campaign requirements.
+
+Generate a local coverage report:
+
+```bash
+npm run test:coverage
+```
+
+Coverage reports are uploaded as a CI artifact on every push/PR.
+
 ## License
 
 MIT

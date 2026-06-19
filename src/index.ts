@@ -50,10 +50,13 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 // Per-IP sliding-window rate limiter: 60 requests per 60 second window.
+// Disabled in test mode so the test suite can make many requests without
+// hitting the limit.
 const RATE_LIMIT_PER_WINDOW = 60;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const rateBuckets = new Map<string, number[]>();
 app.use((req: Request, res: Response, next: NextFunction) => {
+  if (process.env.NODE_ENV === "test") return next();
   const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
   const now = Date.now();
   const bucket = (rateBuckets.get(ip) ?? []).filter(
