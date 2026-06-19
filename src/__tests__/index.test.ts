@@ -224,6 +224,76 @@ describe("StableRoute Backend", () => {
     expect(del.status).toBe(204);
   });
 
+  describe("GET /api/v1/health/deep — readiness probe", () => {
+    it("returns 200 with status ok and checks array when healthy", async () => {
+      const res = await request(app).get("/api/v1/health/deep");
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("ok");
+      expect(res.body.uptimeSeconds).toBeGreaterThanOrEqual(0);
+      expect(res.body.memory).toMatchObject({ rssMb: expect.any(Number), heapUsedMb: expect.any(Number) });
+      expect(res.body.pid).toBeGreaterThan(0);
+      expect(typeof res.body.node).toBe("string");
+
+      // Checks array is present with expected shape
+      expect(Array.isArray(res.body.checks)).toBe(true);
+      expect(res.body.checks.length).toBeGreaterThanOrEqual(2);
+      for (const check of res.body.checks) {
+        expect(check).toMatchObject({
+          name: expect.any(String),
+          status: expect.stringMatching(/^(ok|fail)$/),
+          durationMs: expect.any(Number),
+        });
+      }
+      // Both default checks are present
+      const names = res.body.checks.map((c: { name: string }) => c.name);
+      expect(names).toContain("storage");
+      expect(names).toContain("clock");
+      // All should pass in normal conditions
+      expect(res.body.checks.every((c: { status: string }) => c.status === "ok")).toBe(true);
+    });
+
+    it("returns 503 degraded when a check fails", async () => {
+      // Force the clock check to fail by stubbing Date.now to return a pre-2020 timestamp
+      const spy = jest.spyOn(Date, "now");
+      spy.mockReturnValue(1000);
+
+      const res = await request(app).get("/api/v1/health/deep");
+      spy.mockRestore();
+
+      expect(res.status).toBe(503);
+      expect(res.body.status).toBe("degraded");
+
+      const clockCheck = res.body.checks.find((c: { name: string }) => c.name === "clock");
+      expect(clockCheck).toBeDefined();
+      expect(clockCheck.status).toBe("fail");
+
+      // Other fields are still present for backward compat
+      expect(res.body.uptimeSeconds).toBeGreaterThanOrEqual(0);
+      expect(res.body.memory.rssMb).toBeGreaterThan(0);
+    });
+
+    it("returns paused status when service is paused", async () => {
+      await request(app).post("/api/v1/admin/pause");
+      const res = await request(app).get("/api/v1/health/deep");
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("paused");
+      // Checks array still present
+      expect(Array.isArray(res.body.checks)).toBe(true);
+      await request(app).post("/api/v1/admin/unpause");
+    });
+
+    it("still has backward-compatible fields alongside checks", async () => {
+      const res = await request(app).get("/api/v1/health/deep");
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveProperty("status");
+      expect(res.body).toHaveProperty("uptimeSeconds");
+      expect(res.body).toHaveProperty("memory");
+      expect(res.body).toHaveProperty("pid");
+      expect(res.body).toHaveProperty("node");
+      expect(res.body).toHaveProperty("checks");
+    });
+  });
+
   it("GET /api/v1/stats returns totalPairs and paused", async () => {
     const res = await request(app).get("/api/v1/stats");
     expect(res.status).toBe(200);
@@ -273,6 +343,278 @@ describe("StableRoute Backend", () => {
         .patch("/api/v1/pairs/AAA/BBB/fee_bps")
         .send({ feeBps: 5 });
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe("pair lifecycle: delete and read single", () => {
+    it("registers, reads, and unregisters a pair", async () => {
+      await request(app)
+        .post("/api/v1/pairs")
+        .send({ source: "ALIVE", destination: "PAIR" });
+
+      // Read single pair
+      const read = await request(app).get("/api/v1/pairs/ALIVE/PAIR");
+      expect(read.status).toBe(200);
+      expect(read.body).toMatchObject({ source: "ALIVE", destination: "PAIR", registered: true });
+
+      // Unregister
+      const del = await request(app).delete("/api/v1/pairs/ALIVE/PAIR");
+      expect(del.status).toBe(204);
+
+      // Read after delete — 404
+      const readAfter = await request(app).get("/api/v1/pairs/ALIVE/PAIR");
+      expect(readAfter.status).toBe(404);
+
+      // Double delete — 404
+      const delAgain = await request(app).delete("/api/v1/pairs/ALIVE/PAIR");
+      expect(delAgain.status).toBe(404);
+    });
+
+    it("GET single pair returns 404 for unregistered pair", async () => {
+      const res = await request(app).get("/api/v1/pairs/NO/EXIST");
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe("pair-meta: liquidity, max, min patches", () => {
+    beforeEach(async () => {
+      await request(app)
+        .post("/api/v1/pairs")
+        .send({ source: "META", destination: "TEST" });
+    });
+
+    afterAll(async () => {
+      await request(app).delete("/api/v1/pairs/META/TEST");
+    });
+
+    it("patches liquidity", async () => {
+      const res = await request(app)
+        .patch("/api/v1/pairs/META/TEST/liquidity")
+        .send({ liquidity: "50000" });
+      expect(res.status).toBe(200);
+      expect(res.body.liquidity).toBe("50000");
+    });
+
+    it("rejects liquidity with non-numeric string", async () => {
+      const res = await request(app)
+        .patch("/api/v1/pairs/META/TEST/liquidity")
+        .send({ liquidity: "abc" });
+      expect(res.status).toBe(400);
+    });
+
+    it("patches maxAmount", async () => {
+      const res = await request(app)
+        .patch("/api/v1/pairs/META/TEST/max")
+        .send({ maxAmount: "99999" });
+      expect(res.status).toBe(200);
+      expect(res.body.maxAmount).toBe("99999");
+    });
+
+    it("rejects maxAmount with zero", async () => {
+      const res = await request(app)
+        .patch("/api/v1/pairs/META/TEST/max")
+        .send({ maxAmount: "0" });
+      expect(res.status).toBe(400);
+    });
+
+    it("patches minAmount", async () => {
+      const res = await request(app)
+        .patch("/api/v1/pairs/META/TEST/min")
+        .send({ minAmount: "100" });
+      expect(res.status).toBe(200);
+      expect(res.body.minAmount).toBe("100");
+    });
+
+    it("rejects minAmount with negative", async () => {
+      const res = await request(app)
+        .patch("/api/v1/pairs/META/TEST/min")
+        .send({ minAmount: "-5" });
+      expect(res.status).toBe(400);
+    });
+
+    it("returns 404 for unregistered pair on all patch endpoints", async () => {
+      const liquidity = await request(app)
+        .patch("/api/v1/pairs/GONE/ONE/liquidity")
+        .send({ liquidity: "10" });
+      expect(liquidity.status).toBe(404);
+
+      const max = await request(app)
+        .patch("/api/v1/pairs/GONE/ONE/max")
+        .send({ maxAmount: "10" });
+      expect(max.status).toBe(404);
+
+      const min = await request(app)
+        .patch("/api/v1/pairs/GONE/ONE/min")
+        .send({ minAmount: "10" });
+      expect(min.status).toBe(404);
+    });
+
+    it("returns info with default values for unregistered pair", async () => {
+      const res = await request(app).get("/api/v1/pairs/GONE/ONE/info");
+      expect(res.status).toBe(200);
+      expect(res.body.registered).toBe(false);
+      expect(res.body.feeBps).toBe(0);
+    });
+  });
+
+  describe("POST /api/v1/quote/bulk", () => {
+    it("rejects empty items", async () => {
+      const res = await request(app)
+        .post("/api/v1/quote/bulk")
+        .send({ items: [] });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects more than 100 items", async () => {
+      const res = await request(app)
+        .post("/api/v1/quote/bulk")
+        .send({ items: new Array(101).fill({}) });
+      expect(res.status).toBe(400);
+    });
+
+    it("returns per-item results with valid and invalid entries", async () => {
+      const res = await request(app)
+        .post("/api/v1/quote/bulk")
+        .send({
+          items: [
+            { source_asset: "USDC", dest_asset: "EURC", amount: "100" },
+            { source_asset: "USDC", dest_asset: "USDC", amount: "100" },
+            { source_asset: "XLM", dest_asset: "", amount: "50" },
+          ],
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.results[0].ok).toBe(true);
+      expect(res.body.results[1].ok).toBe(false);
+      expect(res.body.results[2].ok).toBe(false);
+    });
+  });
+
+  describe("webhook edge cases", () => {
+    it("lists webhooks (empty and after creation)", async () => {
+      const listEmpty = await request(app).get("/api/v1/webhooks");
+      expect(listEmpty.status).toBe(200);
+      expect(Array.isArray(listEmpty.body.items)).toBe(true);
+
+      await request(app)
+        .post("/api/v1/webhooks")
+        .send({ url: "https://hook.example/evt", events: ["pair.registered"] });
+
+      const listFull = await request(app).get("/api/v1/webhooks");
+      expect(listFull.status).toBe(200);
+      expect(listFull.body.items.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("rejects invalid events array", async () => {
+      const badEvents = await request(app)
+        .post("/api/v1/webhooks")
+        .send({ url: "https://example.com/h", events: "not-an-array" });
+      expect(badEvents.status).toBe(400);
+
+      const emptyEvents = await request(app)
+        .post("/api/v1/webhooks")
+        .send({ url: "https://example.com/h", events: [] });
+      expect(emptyEvents.status).toBe(400);
+    });
+
+    it("returns 404 when deleting non-existent webhook", async () => {
+      const res = await request(app).delete("/api/v1/webhooks/nonexistent-id");
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe("admin endpoints", () => {
+    it("GET /api/v1/admin/status returns paused state", async () => {
+      const res = await request(app).get("/api/v1/admin/status");
+      expect(res.status).toBe(200);
+      expect("paused" in res.body).toBe(true);
+    });
+  });
+
+  describe("config edge cases", () => {
+    it("rejects all invalid config values", async () => {
+      const res = await request(app)
+        .patch("/api/v1/config")
+        .send({ rateLimitPerWindow: -1, rateLimitWindowMs: 0, bulkMaxItems: -100 });
+      expect(res.status).toBe(400);
+    });
+
+    it("patches multiple config fields at once", async () => {
+      const res = await request(app)
+        .patch("/api/v1/config")
+        .send({ rateLimitPerWindow: 100, rateLimitWindowMs: 30000, bulkMaxItems: 50 });
+      expect(res.status).toBe(200);
+      expect(res.body.config.rateLimitPerWindow).toBe(100);
+      expect(res.body.config.rateLimitWindowMs).toBe(30000);
+      expect(res.body.config.bulkMaxItems).toBe(50);
+    });
+  });
+
+  describe("events filtering", () => {
+    it("filters events by since timestamp", async () => {
+      await request(app)
+        .post("/api/v1/pairs")
+        .send({ source: "SINCE", destination: "TEST" });
+
+      const farFuture = Date.now() + 100000;
+      const noEvents = await request(app).get(`/api/v1/events?since=${farFuture}`);
+      expect(noEvents.status).toBe(200);
+      expect(noEvents.body.items.length).toBe(0);
+
+      const allEvents = await request(app).get("/api/v1/events");
+      expect(allEvents.status).toBe(200);
+      expect(allEvents.body.items.length).toBeGreaterThan(0);
+    });
+
+    it("respects limit parameter", async () => {
+      const res = await request(app).get("/api/v1/events?limit=3");
+      expect(res.status).toBe(200);
+      expect(res.body.items.length).toBeLessThanOrEqual(3);
+    });
+  });
+
+  describe("api-keys edge cases", () => {
+    it("rejects missing label", async () => {
+      const res = await request(app)
+        .post("/api/v1/api-keys")
+        .send({});
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects empty label", async () => {
+      const res = await request(app)
+        .post("/api/v1/api-keys")
+        .send({ label: "" });
+      expect(res.status).toBe(400);
+    });
+
+    it("returns 404 when deleting non-existent key prefix", async () => {
+      const res = await request(app).delete("/api/v1/api-keys/nonexistent");
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe("GET /api/v1/openapi.json", () => {
+    it("contains all expected paths", async () => {
+      const res = await request(app).get("/api/v1/openapi.json");
+      expect(res.body.info.version).toBe("1.0.0");
+      expect(res.body.paths["/api/v1/api-keys"]).toBeTruthy();
+      expect(res.body.paths["/api/v1/webhooks"]).toBeTruthy();
+      expect(res.body.paths["/api/v1/events"]).toBeTruthy();
+    });
+  });
+
+
+
+  describe("GET /api/v1/pairs with ETag", () => {
+    it("returns 304 when If-None-Match matches", async () => {
+      const first = await request(app).get("/api/v1/pairs");
+      const etag = first.headers["etag"];
+      expect(etag).toBeTruthy();
+
+      const second = await request(app)
+        .get("/api/v1/pairs")
+        .set("If-None-Match", etag);
+      expect(second.status).toBe(304);
     });
   });
 

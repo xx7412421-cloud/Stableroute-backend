@@ -50,10 +50,13 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 // Per-IP sliding-window rate limiter: 60 requests per 60 second window.
+// Disabled in test mode so the test suite can make many requests without
+// hitting the limit.
 const RATE_LIMIT_PER_WINDOW = 60;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const rateBuckets = new Map<string, number[]>();
 app.use((req: Request, res: Response, next: NextFunction) => {
+  if (process.env.NODE_ENV === "test") return next();
   const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
   const now = Date.now();
   const bucket = (rateBuckets.get(ip) ?? []).filter(
@@ -141,10 +144,71 @@ app.get("/api/v1/openapi.json", (_req: Request, res: Response) => {
   });
 });
 
-app.get("/api/v1/health/deep", (_req: Request, res: Response) => {
+/**
+ * Run all health checks for the deep readiness probe.
+ * Each check measures its own duration (in milliseconds) and returns
+ * `{ name, status, durationMs }`. Checks are synchronous and fast so
+ * the probe never hangs. External dependencies (e.g. storage, clock)
+ * are tested with a lightweight read/write cycle respectively.
+ *
+ * Results are returned as an array of { name, status, durationMs } objects.
+ */
+const runHealthChecks = (): Array<{ name: string; status: "ok" | "fail"; durationMs: number }> => {
+  const checks: Array<{ name: string; status: "ok" | "fail"; durationMs: number }> = [];
+
+  // Storage check — verifies that the in-memory store can write and read back.
+  const storageStart = Date.now();
+  try {
+    const testKey = `__health_${storageStart}_${Math.random()}`;
+    pairMeta.set(testKey, defaultMeta());
+    const readback = pairMeta.get(testKey);
+    pairMeta.delete(testKey);
+    checks.push({
+      name: "storage",
+      status: readback !== undefined ? "ok" : "fail",
+      durationMs: Date.now() - storageStart,
+    });
+  } catch {
+    checks.push({
+      name: "storage",
+      status: "fail",
+      durationMs: Date.now() - storageStart,
+    });
+  }
+
+  // Clock check — verifies the system clock is producing post-epoch timestamps.
+  const clockStart = Date.now();
+  try {
+    const now = Date.now();
+    // A timestamp earlier than 2020-01-01 indicates a broken system clock.
+    checks.push({
+      name: "clock",
+      status: now > 1577836800000 ? "ok" : "fail",
+      durationMs: Date.now() - clockStart,
+    });
+  } catch {
+    checks.push({
+      name: "clock",
+      status: "fail",
+      durationMs: Date.now() - clockStart,
+    });
+  }
+
+  return checks;
+};
+
+app.get("/api/v1/health/deep", (req: Request, res: Response) => {
   const m = process.memoryUsage();
-  res.json({
-    status: paused ? "paused" : "ok",
+
+  // Checks are synchronous and fast so the probe never hangs.
+  // When async downstream checks are added, wrap runHealthChecks() in a
+  // Promise.race with a timeout or pass an AbortSignal.
+  const checks = runHealthChecks();
+  const degraded = checks.some((c) => c.status === "fail");
+  const status = paused ? "paused" : degraded ? "degraded" : "ok";
+
+  const body = {
+    status,
     uptimeSeconds: Math.round(process.uptime()),
     memory: {
       rssMb: Math.round(m.rss / 1024 / 1024),
@@ -152,7 +216,14 @@ app.get("/api/v1/health/deep", (_req: Request, res: Response) => {
     },
     pid: process.pid,
     node: process.version,
-  });
+    checks,
+  };
+
+  if (degraded) {
+    res.status(503).json(body);
+  } else {
+    res.json(body);
+  }
 });
 
 let paused = false;
