@@ -224,6 +224,76 @@ describe("StableRoute Backend", () => {
     expect(del.status).toBe(204);
   });
 
+  describe("GET /api/v1/health/deep — readiness probe", () => {
+    it("returns 200 with status ok and checks array when healthy", async () => {
+      const res = await request(app).get("/api/v1/health/deep");
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("ok");
+      expect(res.body.uptimeSeconds).toBeGreaterThanOrEqual(0);
+      expect(res.body.memory).toMatchObject({ rssMb: expect.any(Number), heapUsedMb: expect.any(Number) });
+      expect(res.body.pid).toBeGreaterThan(0);
+      expect(typeof res.body.node).toBe("string");
+
+      // Checks array is present with expected shape
+      expect(Array.isArray(res.body.checks)).toBe(true);
+      expect(res.body.checks.length).toBeGreaterThanOrEqual(2);
+      for (const check of res.body.checks) {
+        expect(check).toMatchObject({
+          name: expect.any(String),
+          status: expect.stringMatching(/^(ok|fail)$/),
+          durationMs: expect.any(Number),
+        });
+      }
+      // Both default checks are present
+      const names = res.body.checks.map((c: { name: string }) => c.name);
+      expect(names).toContain("storage");
+      expect(names).toContain("clock");
+      // All should pass in normal conditions
+      expect(res.body.checks.every((c: { status: string }) => c.status === "ok")).toBe(true);
+    });
+
+    it("returns 503 degraded when a check fails", async () => {
+      // Force the clock check to fail by stubbing Date.now to return a pre-2020 timestamp
+      const spy = jest.spyOn(Date, "now");
+      spy.mockReturnValue(1000);
+
+      const res = await request(app).get("/api/v1/health/deep");
+      spy.mockRestore();
+
+      expect(res.status).toBe(503);
+      expect(res.body.status).toBe("degraded");
+
+      const clockCheck = res.body.checks.find((c: { name: string }) => c.name === "clock");
+      expect(clockCheck).toBeDefined();
+      expect(clockCheck.status).toBe("fail");
+
+      // Other fields are still present for backward compat
+      expect(res.body.uptimeSeconds).toBeGreaterThanOrEqual(0);
+      expect(res.body.memory.rssMb).toBeGreaterThan(0);
+    });
+
+    it("returns paused status when service is paused", async () => {
+      await request(app).post("/api/v1/admin/pause");
+      const res = await request(app).get("/api/v1/health/deep");
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("paused");
+      // Checks array still present
+      expect(Array.isArray(res.body.checks)).toBe(true);
+      await request(app).post("/api/v1/admin/unpause");
+    });
+
+    it("still has backward-compatible fields alongside checks", async () => {
+      const res = await request(app).get("/api/v1/health/deep");
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveProperty("status");
+      expect(res.body).toHaveProperty("uptimeSeconds");
+      expect(res.body).toHaveProperty("memory");
+      expect(res.body).toHaveProperty("pid");
+      expect(res.body).toHaveProperty("node");
+      expect(res.body).toHaveProperty("checks");
+    });
+  });
+
   it("GET /api/v1/stats returns totalPairs and paused", async () => {
     const res = await request(app).get("/api/v1/stats");
     expect(res.status).toBe(200);
