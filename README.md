@@ -53,6 +53,10 @@ On every push/PR to `main`, GitHub Actions runs:
 
 Ensure these pass locally before pushing.
 
+## Error responses
+
+Handlers use a shared `sendError` helper so 400/404/413/500-style responses keep the canonical `{ error, message, requestId }` shape. The request id is attached before JSON parsing, which keeps body-parser errors correlated with the `X-Request-Id` response header.
+
 ## Contributing
 
 1. Fork the repo and create a branch from `main`.

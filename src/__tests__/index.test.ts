@@ -1,6 +1,16 @@
 import request from "supertest";
 import app from "../index";
 
+const expectCanonicalError = (
+  body: Record<string, unknown>,
+  requestId: string,
+  error: string
+) => {
+  expect(body.error).toBe(error);
+  expect(body.message).toBeTruthy();
+  expect(body.requestId).toBe(requestId);
+};
+
 describe("StableRoute Backend", () => {
   it("GET /health returns 200 and status ok", async () => {
     const res = await request(app).get("/health");
@@ -51,6 +61,45 @@ describe("StableRoute Backend", () => {
     expect(res.body.error).toBe("not_found");
     expect(res.body.message).toContain("/api/v1/this-route-does-not-exist");
     expect(res.body.requestId).toBeTruthy();
+  });
+
+  it("keeps canonical error responses correlated with X-Request-Id", async () => {
+    const badQuote = await request(app)
+      .get("/api/v1/quote")
+      .set("X-Request-Id", "err-400");
+    expect(badQuote.status).toBe(400);
+    expectCanonicalError(badQuote.body, "err-400", "invalid_request");
+
+    const missingRoute = await request(app)
+      .get("/api/v1/not-real")
+      .set("X-Request-Id", "err-404");
+    expect(missingRoute.status).toBe(404);
+    expectCanonicalError(missingRoute.body, "err-404", "not_found");
+
+    const tooLarge = await request(app)
+      .post("/api/v1/pairs")
+      .set("X-Request-Id", "err-413")
+      .send({ payload: "x".repeat(110_000) });
+    expect(tooLarge.status).toBe(413);
+    expectCanonicalError(tooLarge.body, "err-413", "payload_too_large");
+
+    const serverError = await request(app)
+      .post("/api/v1/pairs")
+      .set("Content-Type", "application/json")
+      .set("X-Request-Id", "err-500")
+      .send("{");
+    expect(serverError.status).toBe(500);
+    expectCanonicalError(serverError.body, "err-500", "internal_error");
+    expect(serverError.body).toMatchObject({ method: "POST", path: "/api/v1/pairs" });
+
+    await request(app).post("/api/v1/admin/pause");
+    const paused = await request(app)
+      .post("/api/v1/pairs")
+      .set("X-Request-Id", "err-503")
+      .send({ source: "PAU", destination: "REQ" });
+    expect(paused.status).toBe(503);
+    expectCanonicalError(paused.body, "err-503", "service_paused");
+    await request(app).post("/api/v1/admin/unpause");
   });
 
   describe("/api/v1/pairs", () => {

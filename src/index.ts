@@ -6,6 +6,37 @@ const app = express();
 const PORT = process.env.PORT ?? 3001;
 
 app.use(cors());
+
+type RequestWithId = Request & { id?: string };
+type ErrorResponseExtra = Record<string, unknown>;
+
+/**
+ * Read the request id attached by the correlation middleware.
+ */
+const getRequestId = (req: Request): string | undefined => (req as RequestWithId).id;
+
+/**
+ * Send the canonical API error body used by explicit handlers and middleware.
+ */
+const sendError = (
+  res: Response,
+  req: Request,
+  status: number,
+  error: string,
+  message: string,
+  extra: ErrorResponseExtra = {}
+) => res.status(status).json({ error, message, ...extra, requestId: getRequestId(req) });
+
+// Attach an X-Request-Id before body parsing so parser errors can still
+// return the canonical error shape with a correlation id.
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const incoming = req.header("x-request-id");
+  const id = incoming && incoming.length <= 200 ? incoming : randomUUID();
+  (req as RequestWithId).id = id;
+  res.setHeader("X-Request-Id", id);
+  next();
+});
+
 app.use(express.json({ limit: "100kb" }));
 
 // Pause guard: refuses non-idempotent methods with 503 except
@@ -15,11 +46,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   const m = req.method.toUpperCase();
   if (m === "GET" || m === "HEAD" || m === "OPTIONS") return next();
   if (req.path === "/api/v1/admin/unpause") return next();
-  res.status(503).json({
-    error: "service_paused",
-    message: "StableRoute backend is paused",
-    requestId: (req as Request & { id?: string }).id,
-  });
+  sendError(res, req, 503, "service_paused", "StableRoute backend is paused");
 });
 
 // Per-IP sliding-window rate limiter: 60 requests per 60 second window.
@@ -34,11 +61,13 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   );
   if (bucket.length >= RATE_LIMIT_PER_WINDOW) {
     res.setHeader("Retry-After", "60");
-    res.status(429).json({
-      error: "rate_limited",
-      message: `more than ${RATE_LIMIT_PER_WINDOW} requests per ${RATE_LIMIT_WINDOW_MS / 1000}s`,
-      requestId: (req as Request & { id?: string }).id,
-    });
+    sendError(
+      res,
+      req,
+      429,
+      "rate_limited",
+      `more than ${RATE_LIMIT_PER_WINDOW} requests per ${RATE_LIMIT_WINDOW_MS / 1000}s`
+    );
     return;
   }
   bucket.push(now);
@@ -55,7 +84,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     if (process.env.NODE_ENV !== "test") {
       console.log(
         JSON.stringify({
-          requestId: (req as Request & { id?: string }).id,
+          requestId: getRequestId(req),
           method: req.method,
           path: req.path,
           status: res.statusCode,
@@ -72,18 +101,6 @@ app.use((_req: Request, res: Response, next: NextFunction) => {
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
-  next();
-});
-
-// Attach an X-Request-Id to every response, echoing the caller's value
-// when present (so a gateway/load-balancer chain stays correlated) and
-// minting a fresh UUID otherwise. Surfaced as `req.id` so handlers and
-// the error middleware can quote it in their JSON bodies.
-app.use((req: Request, res: Response, next: NextFunction) => {
-  const incoming = req.header("x-request-id");
-  const id = incoming && incoming.length <= 200 ? incoming : randomUUID();
-  (req as Request & { id: string }).id = id;
-  res.setHeader("X-Request-Id", id);
   next();
 });
 
@@ -185,7 +202,7 @@ app.delete("/api/v1/api-keys/:prefix", (req: Request, res: Response) => {
   let found: string | undefined;
   for (const k of apiKeyStore.keys()) if (k.slice(0, 8) === prefix) { found = k; break; }
   if (!found) {
-    res.status(404).json({ error: "not_found", message: `no key with prefix ${prefix}`, requestId: (req as Request & { id?: string }).id });
+    sendError(res, req, 404, "not_found", `no key with prefix ${prefix}`);
     return;
   }
   apiKeyStore.delete(found);
@@ -203,9 +220,8 @@ app.get("/api/v1/api-keys", (_req: Request, res: Response) => {
 
 app.post("/api/v1/api-keys", (req: Request, res: Response) => {
   const { label } = req.body ?? {};
-  const requestId = (req as Request & { id?: string }).id;
   if (typeof label !== "string" || label.length === 0 || label.length > 64) {
-    res.status(400).json({ error: "invalid_request", message: "label must be 1-64 chars", requestId });
+    sendError(res, req, 400, "invalid_request", "label must be 1-64 chars");
     return;
   }
   const key = `srk_${randomUUID().replace(/-/g, "")}`;
@@ -219,7 +235,7 @@ const webhookStore = new Map<string, WebhookRecord>();
 app.delete("/api/v1/webhooks/:id", (req: Request, res: Response) => {
   const { id } = req.params;
   if (!webhookStore.has(id)) {
-    res.status(404).json({ error: "not_found", message: `webhook ${id} not found`, requestId: (req as Request & { id?: string }).id });
+    sendError(res, req, 404, "not_found", `webhook ${id} not found`);
     return;
   }
   webhookStore.delete(id);
@@ -233,13 +249,12 @@ app.get("/api/v1/webhooks", (_req: Request, res: Response) => {
 
 app.post("/api/v1/webhooks", (req: Request, res: Response) => {
   const { url, events } = req.body ?? {};
-  const requestId = (req as Request & { id?: string }).id;
   if (typeof url !== "string" || !/^https?:\/\//.test(url) || url.length > 2048) {
-    res.status(400).json({ error: "invalid_request", message: "url must be http(s), <=2048 chars", requestId });
+    sendError(res, req, 400, "invalid_request", "url must be http(s), <=2048 chars");
     return;
   }
   if (!Array.isArray(events) || events.length === 0 || events.some((e) => typeof e !== "string")) {
-    res.status(400).json({ error: "invalid_request", message: "events must be a non-empty string array", requestId });
+    sendError(res, req, 400, "invalid_request", "events must be a non-empty string array");
     return;
   }
   const id = `wh_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
@@ -263,12 +278,12 @@ app.patch("/api/v1/pairs/:source/:destination/liquidity", (req: Request, res: Re
   const { source, destination } = req.params;
   const k = pairKey(source, destination);
   if (!pairRegistry.has(k)) {
-    res.status(404).json({ error: "not_found", message: "pair not registered", requestId: (req as Request & { id?: string }).id });
+    sendError(res, req, 404, "not_found", "pair not registered");
     return;
   }
   const { liquidity } = req.body ?? {};
   if (typeof liquidity !== "string" || !/^[0-9]{1,39}$/.test(liquidity)) {
-    res.status(400).json({ error: "invalid_request", message: "liquidity must be a non-negative integer string", requestId: (req as Request & { id?: string }).id });
+    sendError(res, req, 400, "invalid_request", "liquidity must be a non-negative integer string");
     return;
   }
   const meta = pairMeta.get(k) ?? defaultMeta();
@@ -281,12 +296,12 @@ app.patch("/api/v1/pairs/:source/:destination/max", (req: Request, res: Response
   const { source, destination } = req.params;
   const k = pairKey(source, destination);
   if (!pairRegistry.has(k)) {
-    res.status(404).json({ error: "not_found", message: "pair not registered", requestId: (req as Request & { id?: string }).id });
+    sendError(res, req, 404, "not_found", "pair not registered");
     return;
   }
   const { maxAmount } = req.body ?? {};
   if (typeof maxAmount !== "string" || !/^[1-9][0-9]{0,38}$/.test(maxAmount)) {
-    res.status(400).json({ error: "invalid_request", message: "maxAmount must be a positive integer string", requestId: (req as Request & { id?: string }).id });
+    sendError(res, req, 400, "invalid_request", "maxAmount must be a positive integer string");
     return;
   }
   const meta = pairMeta.get(k) ?? defaultMeta();
@@ -299,12 +314,12 @@ app.patch("/api/v1/pairs/:source/:destination/min", (req: Request, res: Response
   const { source, destination } = req.params;
   const k = pairKey(source, destination);
   if (!pairRegistry.has(k)) {
-    res.status(404).json({ error: "not_found", message: "pair not registered", requestId: (req as Request & { id?: string }).id });
+    sendError(res, req, 404, "not_found", "pair not registered");
     return;
   }
   const { minAmount } = req.body ?? {};
   if (typeof minAmount !== "string" || !/^[0-9]{1,39}$/.test(minAmount)) {
-    res.status(400).json({ error: "invalid_request", message: "minAmount must be a non-negative integer string", requestId: (req as Request & { id?: string }).id });
+    sendError(res, req, 400, "invalid_request", "minAmount must be a non-negative integer string");
     return;
   }
   const meta = pairMeta.get(k) ?? defaultMeta();
@@ -317,20 +332,12 @@ app.patch("/api/v1/pairs/:source/:destination/fee_bps", (req: Request, res: Resp
   const { source, destination } = req.params;
   const k = pairKey(source, destination);
   if (!pairRegistry.has(k)) {
-    res.status(404).json({
-      error: "not_found",
-      message: "pair not registered",
-      requestId: (req as Request & { id?: string }).id,
-    });
+    sendError(res, req, 404, "not_found", "pair not registered");
     return;
   }
   const { feeBps } = req.body ?? {};
   if (typeof feeBps !== "number" || !Number.isInteger(feeBps) || feeBps < 0 || feeBps > 1000) {
-    res.status(400).json({
-      error: "invalid_request",
-      message: "feeBps must be an integer in [0,1000]",
-      requestId: (req as Request & { id?: string }).id,
-    });
+    sendError(res, req, 400, "invalid_request", "feeBps must be an integer in [0,1000]");
     return;
   }
   const meta = pairMeta.get(k) ?? defaultMeta();
@@ -344,11 +351,7 @@ app.delete("/api/v1/pairs/:source/:destination", (req: Request, res: Response) =
   const { source, destination } = req.params;
   const k = pairKey(source, destination);
   if (!pairRegistry.has(k)) {
-    res.status(404).json({
-      error: "not_found",
-      message: `pair ${source}->${destination} is not registered`,
-      requestId: (req as Request & { id?: string }).id,
-    });
+    sendError(res, req, 404, "not_found", `pair ${source}->${destination} is not registered`);
     return;
   }
   pairRegistry.delete(k);
@@ -360,11 +363,7 @@ app.delete("/api/v1/pairs/:source/:destination", (req: Request, res: Response) =
 app.get("/api/v1/pairs/:source/:destination", (req: Request, res: Response) => {
   const { source, destination } = req.params;
   if (!pairRegistry.has(pairKey(source, destination))) {
-    res.status(404).json({
-      error: "not_found",
-      message: `pair ${source}->${destination} is not registered`,
-      requestId: (req as Request & { id?: string }).id,
-    });
+    sendError(res, req, 404, "not_found", `pair ${source}->${destination} is not registered`);
     return;
   }
   res.json({ source, destination, registered: true });
@@ -382,13 +381,12 @@ const config: Record<string, number> = {
 };
 app.get("/api/v1/config", (_req: Request, res: Response) => res.json({ config }));
 app.patch("/api/v1/config", (req: Request, res: Response) => {
-  const requestId = (req as Request & { id?: string }).id;
   const allowed = ["rateLimitPerWindow", "rateLimitWindowMs", "bulkMaxItems"] as const;
   for (const k of allowed) {
     if (k in (req.body ?? {})) {
       const v = req.body[k];
       if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) {
-        res.status(400).json({ error: "invalid_request", message: `${k} must be positive integer`, requestId });
+        sendError(res, req, 400, "invalid_request", `${k} must be positive integer`);
         return;
       }
       config[k] = v;
@@ -455,20 +453,17 @@ app.get("/api/v1/pairs", (req: Request, res: Response) => {
  */
 app.post("/api/v1/pairs", (req: Request, res: Response) => {
   const { source, destination } = req.body ?? {};
-  const requestId = (req as Request & { id?: string }).id;
   if (!isAssetCode(source) || !isAssetCode(destination)) {
-    return res.status(400).json({
-      error: "invalid_request",
-      message: "source and destination must be 1-12 character strings",
-      requestId,
-    });
+    return sendError(
+      res,
+      req,
+      400,
+      "invalid_request",
+      "source and destination must be 1-12 character strings"
+    );
   }
   if (source === destination) {
-    return res.status(400).json({
-      error: "invalid_request",
-      message: "source and destination must differ",
-      requestId,
-    });
+    return sendError(res, req, 400, "invalid_request", "source and destination must differ");
   }
   const key = pairKey(source, destination);
   const isNew = !pairRegistry.has(key);
@@ -497,10 +492,9 @@ const parseAmount = (v: unknown): bigint | null => {
 };
 
 app.post("/api/v1/quote/bulk", (req: Request, res: Response) => {
-  const requestId = (req as Request & { id?: string }).id;
   const { items } = req.body ?? {};
   if (!Array.isArray(items) || items.length === 0 || items.length > 100) {
-    res.status(400).json({ error: "invalid_request", message: "items must be 1-100 entries", requestId });
+    sendError(res, req, 400, "invalid_request", "items must be 1-100 entries");
     return;
   }
   const results = items.map((it: { source_asset?: unknown; dest_asset?: unknown; amount?: unknown }, i: number) => {
@@ -522,38 +516,37 @@ app.post("/api/v1/quote/bulk", (req: Request, res: Response) => {
 
 app.get("/api/v1/quote", (req: Request, res: Response) => {
   const { source_asset, dest_asset, amount } = req.query;
-  const requestId = (req as Request & { id?: string }).id;
 
   if (!source_asset || !dest_asset || !amount) {
-    return res.status(400).json({
-      error: "invalid_request",
-      message:
-        "Missing required query params: source_asset, dest_asset, amount",
-      requestId,
-    });
+    return sendError(
+      res,
+      req,
+      400,
+      "invalid_request",
+      "Missing required query params: source_asset, dest_asset, amount"
+    );
   }
   if (!isAssetCode(source_asset) || !isAssetCode(dest_asset)) {
-    return res.status(400).json({
-      error: "invalid_request",
-      message: "source_asset and dest_asset must be 1-12 character strings",
-      requestId,
-    });
+    return sendError(
+      res,
+      req,
+      400,
+      "invalid_request",
+      "source_asset and dest_asset must be 1-12 character strings"
+    );
   }
   if (source_asset === dest_asset) {
-    return res.status(400).json({
-      error: "invalid_request",
-      message: "source_asset and dest_asset must differ",
-      requestId,
-    });
+    return sendError(res, req, 400, "invalid_request", "source_asset and dest_asset must differ");
   }
   const parsedAmount = parseAmount(amount);
   if (parsedAmount === null) {
-    return res.status(400).json({
-      error: "invalid_request",
-      message:
-        "amount must be a positive integer string with no leading zero",
-      requestId,
-    });
+    return sendError(
+      res,
+      req,
+      400,
+      "invalid_request",
+      "amount must be a positive integer string with no leading zero"
+    );
   }
 
   res.json({
@@ -567,11 +560,7 @@ app.get("/api/v1/quote", (req: Request, res: Response) => {
 
 // Unknown route: structured 404 echoing the request id.
 app.use((req: Request, res: Response) => {
-  res.status(404).json({
-    error: "not_found",
-    message: `No route for ${req.method} ${req.path}`,
-    requestId: (req as Request & { id?: string }).id,
-  });
+  sendError(res, req, 404, "not_found", `No route for ${req.method} ${req.path}`);
 });
 
 // Final 4-arg error handler. Any handler that throws or calls next(err)
@@ -580,21 +569,14 @@ app.use((req: Request, res: Response) => {
 // clients can branch on `error` uniformly.
 app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
   if (err && typeof err === "object" && "type" in err && (err as { type: string }).type === "entity.too.large") {
-    res.status(413).json({
-      error: "payload_too_large",
-      message: "request body exceeds the 100 KiB limit",
-      requestId: (req as Request & { id?: string }).id,
-    });
+    sendError(res, req, 413, "payload_too_large", "request body exceeds the 100 KiB limit");
     return;
   }
   const message =
     err instanceof Error ? err.message : "Unexpected server error";
-  res.status(500).json({
-    error: "internal_error",
-    message,
+  sendError(res, req, 500, "internal_error", message, {
     method: req.method,
     path: req.path,
-    requestId: (req as Request & { id?: string }).id,
   });
 });
 
