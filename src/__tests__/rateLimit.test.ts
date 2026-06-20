@@ -6,18 +6,28 @@ import app from "../index";
 // 60 s window and cannot bleed across tests.
 const WINDOW_MS = 60_000;
 let baseTime = Date.now();
+const originalRateLimitEnabled = process.env.RATE_LIMIT_ENABLED;
 
 function advanceBase() {
   baseTime += WINDOW_MS * 2;
 }
 
 beforeEach(() => {
+  process.env.RATE_LIMIT_ENABLED = "true";
   advanceBase();
   jest.spyOn(Date, "now").mockReturnValue(baseTime);
 });
 
 afterEach(() => {
   jest.restoreAllMocks();
+});
+
+afterAll(() => {
+  if (originalRateLimitEnabled === undefined) {
+    delete process.env.RATE_LIMIT_ENABLED;
+  } else {
+    process.env.RATE_LIMIT_ENABLED = originalRateLimitEnabled;
+  }
 });
 
 describe("rate limiter", () => {
